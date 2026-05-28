@@ -1,0 +1,99 @@
+{
+    {#-------------------------------------------------------------------------#}
+    {#  Media playback before EVERY Virtual Meeting Room                       #}
+    {#                                                                         #}
+    {#  Policy type : Service Configuration (Call control > Policy profiles)   #}
+    {#  Effect      : When a user dials the SIP alias of any VMR, Pexip first  #}
+    {#                joins them to a media_playback service that plays a      #}
+    {#                video/audio playlist. On playback completion the caller  #}
+    {#                is transferred automatically into the real VMR.          #}
+    {#                                                                         #}
+    {#  How the loop is broken                                                 #}
+    {#  -----------------------                                                #}
+    {#  The playback service's `on_completion` transfers the caller to the     #}
+    {#  *same* alias they dialed, but prefixed with `pb.` (configurable below  #}
+    {#  via PLAYBACK_PREFIX). On that second policy invocation we detect the   #}
+    {#  prefix and return the original VMR's service_config untouched — i.e.  #}
+    {#  no second playback round.                                              #}
+    {#                                                                         #}
+    {#  Prerequisite on the Management Node                                    #}
+    {#  ------------------------------------                                   #}
+    {#  Each VMR that should get a pre-roll needs to *also* resolve the        #}
+    {#  prefixed alias `pb.<original_alias>`. Easiest options:                 #}
+    {#    1. Add a regex match alias to a single routing rule, e.g.            #}
+    {#         Match : ^pb\.(.+)$                                              #}
+    {#         Replace string : \1                                             #}
+    {#       so `pb.meeting1@example.com` re-resolves to                       #}
+    {#       `meeting1@example.com`.                                           #}
+    {#    2. Or add a secondary alias `pb.<alias>` to each VMR manually.       #}
+    {#                                                                         #}
+    {#  Auth propagation (PIN / IdP)                                           #}
+    {#  ----------------------------                                           #}
+    {#  Auth-related fields are only emitted when the original VMR actually    #}
+    {#  has them set. This is important because Jinja renders Python `None`    #}
+    {#  as the literal string "None", which Pexip would otherwise try to use  #}
+    {#  as a real PIN or IdP group name. For a PIN-less, no-IdP VMR the       #}
+    {#  playback service runs with no auth and transfers straight through;    #}
+    {#  for a PIN- or IdP-protected VMR, the host/guest role decision is made  #}
+    {#  at the playback stage and carried through the transfer.                #}
+    {#                                                                         #}
+    {#  Tweakables                                                             #}
+    {#  ---------                                                              #}
+    {#    PLAYBACK_PREFIX : sentinel prefix that marks the post-playback leg.  #}
+    {#                      Must be unique and never used by real VMR aliases. #}
+    {#    PLAYLIST_ID     : numeric ID of the Media Playlist configured under  #}
+    {#                      Call control > Media playlists.                    #}
+    {#-------------------------------------------------------------------------#}
+
+    {% set PLAYBACK_PREFIX = "pb." %}
+    {% set PLAYLIST_ID     = 1 %}
+
+    {% set raw_alias    = call_info.local_alias %}
+    {% set bare_alias   = raw_alias|pex_regex_replace("^sip:", "") %}
+    {% set is_playback_leg = bare_alias.startswith(PLAYBACK_PREFIX)
+                             or raw_alias.startswith("sip:" ~ PLAYBACK_PREFIX) %}
+
+    {% if service_config %}
+        {{ pex_debug_log("Service Config", service_config) }}
+
+        {#-- Only intercept on inbound dial-in to a real VMR (conference). --#}
+        {% if call_info.call_direction == 'dial_in'
+              and service_config.service_type == 'conference'
+              and not is_playback_leg %}
+
+            "action" : "continue",
+            "result" : {
+                "name"           : "Pre-roll playback for {{ bare_alias }}",
+                "service_type"   : "media_playback",
+                "service_tag"    : "vmr-preroll",
+                "media_playlist" : {{ PLAYLIST_ID }},
+                {% if service_config.pin %}
+                "pin" : "{{ service_config.pin }}",
+                {% endif %}
+                {% if service_config.guest_pin %}
+                "guest_pin" : "{{ service_config.guest_pin }}",
+                {% endif %}
+                {% if service_config.allow_guests is not none %}
+                "allow_guests" : {{ service_config.allow_guests|pex_to_json }},
+                {% endif %}
+                {% if service_config.host_identity_provider_group %}
+                "host_identity_provider_group" : "{{ service_config.host_identity_provider_group }}",
+                {% if service_config.non_idp_participants %}
+                "non_idp_participants" : "{{ service_config.non_idp_participants }}",
+                {% endif %}
+                {% endif %}
+                "on_completion" : "{\"transfer\": {\"conference\": \"{{ PLAYBACK_PREFIX }}{{ bare_alias }}\", \"role\": \"auto\"}}"
+            }
+
+        {% else %}
+            {#-- Post-transfer leg, dial-outs, or non-VMR services: passthrough. --#}
+            "action" : "continue",
+            "result" : {{ service_config|pex_to_json }}
+        {% endif %}
+
+    {% else %}
+        {#-- Alias not found / no service config: reject. --#}
+        "action" : "reject",
+        "result" : {}
+    {% endif %}
+}
