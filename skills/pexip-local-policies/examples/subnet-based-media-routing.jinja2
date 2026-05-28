@@ -1,0 +1,20 @@
+{# Subnet ↔ region map: edit this for your environment. #}
+{% set nl_map = {
+    "Oslo"     : ["10.47.0.0/16", "10.147.0.0/16", "10.247.200.0/24"],
+    "New York" : ["10.1.0.0/16",  "10.201.5.0/23"],
+    "Sydney"   : ["10.61.0.0/16"],
+    "London"   : ["10.44.0.0/16"]
+} %}
+{
+    {% if pex_in_subnet(call_info.remote_address, nl_map["Oslo"]) %}
+        "result": { "location": "Oslo",     "overflow_locations": ["London", "New York"] }
+    {% elif pex_in_subnet(call_info.remote_address, nl_map["New York"]) %}
+        "result": { "location": "New York", "overflow_locations": ["London", "Oslo"] }
+    {% elif pex_in_subnet(call_info.remote_address, nl_map["Sydney"]) %}
+        "result": { "location": "Sydney",   "overflow_locations": ["London"] }
+    {% elif pex_in_subnet(call_info.remote_address, nl_map["London"]) %}
+        "result": { "location": "London",   "overflow_locations": ["Oslo", "New York"] }
+    {% else %}
+        "result": {{ suggested_media_overflow_locations | pex_to_json }}
+    {% endif %}
+}

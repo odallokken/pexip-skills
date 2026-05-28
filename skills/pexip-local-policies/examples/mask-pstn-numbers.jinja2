@@ -1,0 +1,14 @@
+{# Participant policy: anonymise any caller whose user-part is a phone number. #}
+{% set userpart = call_info.remote_alias|lower|pex_regex_replace("^(sip:|sips:|h323:)","") |pex_regex_replace('@.+','') %}
+
+{
+    "action" : "continue",
+    {% if userpart|int != 0 %}
+        "result" : {
+            "remote_alias": "0000",
+            "remote_display_name": "Telephone User"
+        }
+    {% else %}
+        "result" : {}
+    {% endif %}
+}

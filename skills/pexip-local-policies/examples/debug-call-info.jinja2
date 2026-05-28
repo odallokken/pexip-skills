@@ -1,0 +1,13 @@
+{
+    {# Writes the entire call_info dict to the Pexip support log on every request.
+       View under History & Logs > Support log, search for pex_debug_log.
+       REMOVE this line in production — it floods the support log. #}
+    {{pex_debug_log("Call information ", call_info) }}
+    {% if service_config %}
+        "action" : "continue",
+        "result" : {{service_config|pex_to_json}}
+    {% else %}
+        "action" : "reject",
+        "result" : {}
+    {% endif %}
+}

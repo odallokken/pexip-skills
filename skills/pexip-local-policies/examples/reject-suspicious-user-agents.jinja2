@@ -1,0 +1,24 @@
+{
+    {# NOTE: not all of these UAs are always malicious — they have legitimate uses.
+       Adapt the list as required for your environment. #}
+    {# NOTE: "cisco" here is NOT used by genuine Cisco gear — it is an openH323 scanner. #}
+    {% set suspect_uas = [
+        "cisco", "friendly-scanner", "sipcli", "sipvicious", "sip-scan",
+        "sipsak", "sundayddr", "iWar", "CSipSimple", "SIVuS", "Gulp", "sipv",
+        "smap", "friendly-request", "VaxIPUserAgent", "VaxSIPUserAgent",
+        "siparmyknife", "Test Agent", "PortSIP VoIP SDK"
+    ] %}
+
+    {% if service_config %}
+        {% if call_info.vendor in suspect_uas %}
+            "action" : "reject",
+            "result" : {}
+        {% else %}
+            "action" : "continue",
+            "result" : {{service_config|pex_to_json}}
+        {% endif %}
+    {% else %}
+        "action" : "reject",
+        "result" : {}
+    {% endif %}
+}
