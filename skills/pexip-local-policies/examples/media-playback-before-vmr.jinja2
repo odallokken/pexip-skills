@@ -1,0 +1,43 @@
+{
+    {# Redirect dial-ins whose alias starts with "sso" (or "sip:sso") into a      #}
+    {# media-playback service first. On playback completion the participant is   #}
+    {# transferred to the real VMR (here: "pb_sso"). The PIN, guest PIN, IDP    #}
+    {# group and allow_guests of the original service config are propagated so   #}
+    {# the playback service authenticates the user identically to the VMR — the  #}
+    {# auth context survives the transfer.                                       #}
+    {#                                                                            #}
+    {# NB: this assumes the real VMR has a second alias dedicated to this       #}
+    {# "playback first" entry point.                                              #}
+
+    {% set call_id               = call_info.local_alias %}
+    {% set host_pin              = service_config.pin %}
+    {% set guest_pin             = service_config.guest_pin %}
+    {% set host_idp              = service_config.host_identity_provider_group %}
+    {% set non_idp_participants  = service_config.non_idp_participants %}
+    {% set allow_guest           = service_config.allow_guests %}
+
+    {% if service_config %}
+        "action" : "continue",
+        {{pex_debug_log("Service Config", service_config) }}
+        {% if call_info.call_direction == 'dial_in'
+              and (call_info.local_alias.startswith("sso") or call_info.local_alias.startswith("sip:sso")) %}
+            "result" : {
+                "name"                          : "Video Message before transfer from - {{call_id}}",
+                "service_type"                  : "media_playback",
+                "service_tag"                   : "test",
+                "media_playlist"                : 4,
+                "pin"                           : "{{host_pin}}",
+                "guest_pin"                     : "{{guest_pin}}",
+                "allow_guests"                  : "{{allow_guest}}",
+                "host_identity_provider_group"  : "{{host_idp}}",
+                "non_idp_participants"          : "{{non_idp_participants}}",
+                "on_completion"                 : "{\"transfer\": {\"conference\": \"pb_sso\", \"role\": \"auto\"}}"
+            }
+        {% else %}
+            "result" : {{service_config|pex_to_json}}
+        {% endif %}
+    {% else %}
+        "action" : "reject",
+        "result" : {}
+    {% endif %}
+}

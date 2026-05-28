@@ -1,0 +1,49 @@
+{
+    {# Priority "All-hands" meeting window. Between 08:00 and 09:00 Helsinki time   #}
+    {# on Mondays, redirect every call EXCEPT the all-hands meeting (tagged        #}
+    {# "allowmeeting") into a short media-playback message and then disconnect.    #}
+    {# Frees port-license / transcoding capacity for the priority meeting.         #}
+    {#                                                                              #}
+    {# Requires a Media playback source AND a Media playlist both named            #}
+    {# "allhands_meeting_message".                                                  #}
+    {#                                                                              #}
+    {# The Zeller's-congruence-style block computes the weekday from pex_now().    #}
+
+    {% set now    = pex_now("Europe/Helsinki") %}
+    {% set offset = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334] %}
+    {% set week   = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"] %}
+    {% set afterFeb = 1 %}
+    {% if now.month > 2 %}
+        {% set afterFeb = 0 %}
+    {% endif %}
+    {% set aux         = now.year - 1700 - afterFeb %}
+    {% set dayOfWeek0  = 5 %}
+    {% set dayOfWeek1  = dayOfWeek0 + (aux + afterFeb) * 365 %}
+    {% set dayOfWeek2  = dayOfWeek1 + aux / 4 - aux / 100 + (aux + 100) / 400 %}
+    {% set dayOfWeek3  = dayOfWeek2 + offset[now.month - 1] + (now.day - 1) %}
+    {% set dayOfWeek   = dayOfWeek3 % 7 %}
+    {% set theDay      = week[dayOfWeek|round(0)|int] %}
+
+    {% if service_config %}
+        "action" : "continue",
+        {% if service_config.service_tag.startswith("allowmeeting") %}
+            "action" : "continue",
+            "result" : {{service_config|pex_to_json}}
+        {% elif theDay == "Monday" and now.hour == 8 %}
+            "action" : "continue",
+            "result" : {
+                "name"                 : "allhands_meeting_message",
+                "service_type"         : "media_playback",
+                "service_tag"          : "allowmeeting",
+                "media_playlist_name"  : "allhands_meeting_message",
+                "on_completion"        : {"disconnect": true}
+            }
+        {% else %}
+            "action" : "continue",
+            "result" : {{service_config|pex_to_json}}
+        {% endif %}
+    {% else %}
+        "action" : "reject",
+        "result" : {}
+    {% endif %}
+}

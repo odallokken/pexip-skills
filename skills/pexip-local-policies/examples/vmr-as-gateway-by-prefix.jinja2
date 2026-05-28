@@ -1,0 +1,31 @@
+{
+    {# Convert a dial-in to a VMR into an outbound MS-SIP gateway call.            #}
+    {# Use case: VMRs provisioned from AD with the user's phone extension as an   #}
+    {# alias; dialing the extension (with the "55" prefix here) rewrites the      #}
+    {# service into a gateway leg towards the matching Skype URI stored in the    #}
+    {# VMR's `description` field. Lets E.164-only systems reach Skype URIs.       #}
+    {# Adjust the prefix; "55" is just an example.                                 #}
+
+    {{pex_debug_log("call_info",     call_info) }}
+    {{pex_debug_log("service_config", service_config) }}
+
+    {% if service_config %}
+        "action" : "continue",
+        {% if service_config.service_type == "conference" and call_info.local_alias.startswith("55") %}
+            {{pex_debug_log("Rewriting VMR to gateway for", call_info.local_alias) }}
+            "result" : {{service_config|pex_update({
+                "service_type"        : "gateway",
+                "mssip_proxy_name"    : "oslo-lync-fe",
+                "outgoing_protocol"   : "mssip",
+                "local_display_name"  : call_info.remote_display_name,
+                "local_alias"         : call_info.remote_alias,
+                "remote_alias"        : service_config.description
+            })|pex_to_json}}
+        {% else %}
+            "result" : {{service_config|pex_to_json}}
+        {% endif %}
+    {% else %}
+        "action" : "reject",
+        "result" : {}
+    {% endif %}
+}

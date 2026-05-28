@@ -1,0 +1,34 @@
+{
+    {# Play a media playlist BEFORE handing the call off to a Teams gateway rule. #}
+    {# Matches inbound calls hitting a routing rule whose service_tag contains    #}
+    {# "greg" and whose dialed alias has the form  88<9-13 digits>@pex.vc — the  #}
+    {# digits are the Teams meeting ID. Plays the "greg_dod" playlist, then       #}
+    {# transfers to alias 89<teams_id> which should resolve to the actual Teams   #}
+    {# gateway routing rule.                                                      #}
+
+    {% set teams_id = call_info.local_alias|pex_regex_replace("^(sip:)?88(\d{9,13}@pex\.vc)", "\\2") %}
+
+    {% if service_config %}
+        {% if call_info.call_direction == 'dial_in' %}
+            {% if "greg" in service_config.service_tag %}
+                "action" : "continue",
+                "result" : {
+                    "name"                : "Greg Media",
+                    "service_type"        : "media_playback",
+                    "service_tag"         : "test",
+                    "media_playlist_name" : "greg_dod",
+                    "on_completion"       : "{\"transfer\": {\"conference\": \"89{{teams_id}}\"}}"
+                }
+            {% else %}
+                "action" : "continue",
+                "result" : {{service_config|pex_to_json}}
+            {% endif %}
+        {% else %}
+            "action" : "continue",
+            "result" : {{service_config|pex_to_json}}
+        {% endif %}
+    {% else %}
+        "action" : "reject",
+        "result" : {}
+    {% endif %}
+}

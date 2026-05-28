@@ -1,0 +1,16 @@
+{
+    {# Override the "from" alias and display name presented to the far end of an   #}
+    {# outbound gateway B-leg. Only works for straight point-to-point gateway      #}
+    {# calls — NOT VMR calls and NOT AVCMU-escalated calls.                        #}
+
+    {% if service_config %}
+        "action" : "continue",
+        "result" : {{service_config|pex_update({
+            "local_alias"        : "policylocalalias@domain.com",
+            "local_display_name" : "Policy controlled Display Name"
+        })|pex_to_json}}
+    {% else %}
+        "action" : "reject",
+        "result" : {}
+    {% endif %}
+}

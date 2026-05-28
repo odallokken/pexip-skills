@@ -1,0 +1,62 @@
+{
+    {# Inspect the calling endpoint's SIP URI for an embedded 2-letter country     #}
+    {# code and prepend the appropriate Avaya steering code to the destination    #}
+    {# alias. Lets the audio-routing decision be made in Pexip instead of Avaya.  #}
+    {# Triggers only on rules tagged "dellAudio"; US/CA need no steering code.    #}
+
+    {% set code = {
+        "AU":"8119","BE":"3202","BR":"7180","CH":"3307","CN":"8671","DE":"3401",
+        "DK":"3203","ES":"3304","FR":"3301","GB":"3104","IE":"3103","IL":"3310",
+        "IT":"3303","JP":"8102","KR":"8620","MY":"8118","MX":"7380","NL":"3211",
+        "NO":"3205","PA":"7110","PE":"7109","PL":"4304","RO":"3406","RU":"3405",
+        "SG":"8115","SE":"3204","TR":"3306"
+    } %}
+    {% set groups  = "" %}
+    {% set orgcode = "" %}
+
+    {% if service_config %}
+        {{pex_debug_log("Service_config", service_config) }}
+        {{pex_debug_log("Call_info",      call_info) }}
+
+        {% if service_config.service_tag == "dellAudio" %}
+            {{pex_debug_log("Calling endpoint name", call_info.remote_display_name) }}
+            {{pex_debug_log("Calling endpoint URI",  call_info.remote_alias) }}
+            {{pex_debug_log("Destination alias",     call_info.local_alias) }}
+
+            {% set groups = pex_regex_search('.+\_\d+\_(..).+', call_info.remote_alias) %}
+            {% if not groups %}
+                {# Try the alternative endpoint-naming convention. #}
+                {% set groups = pex_regex_search('.+\_\d+\_\d+\_(..).+', call_info.remote_alias) %}
+            {% endif %}
+
+            {% if groups %}
+                {% if groups[0] == "US" or groups[0] == "CA" %}
+                    {{pex_debug_log("US/CA — no steering code needed") }}
+                    "action" : "continue",
+                    "result" : {{service_config|pex_to_json}}
+                {% else %}
+                    {% set orgcode = code[groups[0]] %}
+                    {% if orgcode %}
+                        {{pex_debug_log("Prepending steering code", orgcode, "for country", groups[0]) }}
+                        "action" : "continue",
+                        "result" : {{service_config|pex_update({"remote_alias": orgcode + service_config.remote_alias})|pex_to_json}}
+                    {% else %}
+                        {{pex_debug_log("No steering code mapped for", groups[0]) }}
+                        "action" : "continue",
+                        "result" : {{service_config|pex_to_json}}
+                    {% endif %}
+                {% endif %}
+            {% else %}
+                {{pex_debug_log("Could not extract country code from", call_info.remote_alias) }}
+                "action" : "continue",
+                "result" : {{service_config|pex_to_json}}
+            {% endif %}
+        {% else %}
+            "action" : "continue",
+            "result" : {{service_config|pex_to_json}}
+        {% endif %}
+    {% else %}
+        "action" : "reject",
+        "result" : {}
+    {% endif %}
+}

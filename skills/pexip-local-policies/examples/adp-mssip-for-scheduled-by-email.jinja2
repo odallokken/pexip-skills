@@ -1,0 +1,27 @@
+{
+    {# For scheduled meetings (alias starts with "88") owned by a @pexip.com user,    #}
+    {# auto-dial the VMR owner's email address as an MS-SIP Skype for Business        #}
+    {# participant. Adjust the scheduled prefix, email suffix, protocol and role for  #}
+    {# your deployment. The ADP is added with role "chair".                           #}
+
+    {% if service_config %}
+        "action" : "continue",
+        {% if service_config.service_type == "conference"
+              and call_info.local_alias.startswith("88")
+              and service_config.primary_owner_email_address.endswith("@pexip.com") %}
+            "result" : {{service_config|pex_update({
+                "automatic_participants" : [{
+                    "remote_alias"       : service_config.primary_owner_email_address,
+                    "local_alias"        : call_info.local_alias,
+                    "protocol"           : "mssip",
+                    "role"               : "chair"
+                }]
+            })|pex_to_json}}
+        {% else %}
+            "result" : {{service_config|pex_to_json}}
+        {% endif %}
+    {% else %}
+        "action" : "reject",
+        "result" : {}
+    {% endif %}
+}

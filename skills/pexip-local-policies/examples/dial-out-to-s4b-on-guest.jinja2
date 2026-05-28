@@ -1,0 +1,32 @@
+{
+    {# Dial out to the VMR owner's S4B/MS-SIP address the first time a guest joins, #}
+    {# but NOT when the host's own endpoint joins. The `exec` list pairs host       #}
+    {# endpoint aliases with their VMR aliases. Untested with pre-existing ADPs on  #}
+    {# the VMR — clear those first.                                                 #}
+
+    {% set exec = [
+        ("sip:host1.endpoint1@domain.com", "sip:vmr.alias.host1@domain.com")
+    ] %}
+    {% set adp_dial = service_config.primary_owner_email_address %}
+
+    {% if service_config %}
+        "action" : "continue",
+        {% if (call_info.remote_alias, call_info.local_alias) not in exec and adp_dial is defined %}
+            {{pex_debug_log("Guest join FROM:", call_info.remote_alias, "TO:", call_info.local_alias, "- adding S4B ADP", adp_dial) }}
+            "result" : {{service_config|pex_update({
+                "automatic_participants" : [{
+                    "remote_alias" : adp_dial,
+                    "local_alias"  : call_info.local_alias,
+                    "protocol"     : "mssip",
+                    "role"         : "chair"
+                }]
+            })|pex_to_json}}
+        {% else %}
+            {{pex_debug_log("Host join FROM:", call_info.remote_alias, "TO:", call_info.local_alias, "- no ADP added") }}
+            "result" : {{service_config|pex_to_json}}
+        {% endif %}
+    {% else %}
+        "action" : "reject",
+        "result" : {}
+    {% endif %}
+}

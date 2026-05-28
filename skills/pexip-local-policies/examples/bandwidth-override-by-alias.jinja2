@@ -1,0 +1,29 @@
+{
+    {# Cap inbound bandwidth overrides for specific H.323 endpoints (dial-in only).#}
+    {# Useful when a small set of room systems are known to negotiate too low or  #}
+    {# too high a bit-rate and you want to force 4 Mbps in/out.                    #}
+
+    {% set endpointalias = [
+        "11111@domain.com", "22222@domain.com",
+        "33333@domain.com", "44444@domain.com"
+    ] %}
+
+    {{pex_debug_log("Call information", call_info) }}
+
+    {% if service_config %}
+        "action" : "continue",
+        {% if call_info.protocol == "h323"
+              and call_info.call_direction == "dial_in"
+              and call_info.remote_alias in endpointalias %}
+            "result" : {{service_config|pex_update({
+                "max_callrate_in"  : 4096000,
+                "max_callrate_out" : 4096000
+            })|pex_to_json}}
+        {% else %}
+            "result" : {{service_config|pex_to_json}}
+        {% endif %}
+    {% else %}
+        "action" : "reject",
+        "result" : {}
+    {% endif %}
+}
