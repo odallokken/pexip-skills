@@ -1,0 +1,22 @@
+{
+    {# Enable text overlay only for scheduled meetings — detected by an alias of   #}
+    {# the form 77NNNNNN (optionally prefixed with sip:/h323: and suffixed with   #}
+    {# a domain). Adjust the regex to your scheduled-conference numbering plan.   #}
+
+    {% set scheduled = false %}
+    {% if service_config %}
+        {% if call_info.local_alias|pex_regex_replace("^(h323:|sip:)?77(\d{6})(@vc.pexip.com.au)?", "scheduled") == "scheduled" %}
+            {% set scheduled = true %}
+        {% endif %}
+        "action" : "continue",
+        {% if scheduled %}
+            {{pex_debug_log("Enabling overlay text for scheduled conference", call_info.local_alias) }}
+            "result" : {{service_config|pex_update({"enable_overlay_text": true})|pex_to_json}}
+        {% else %}
+            "result" : {{service_config|pex_to_json}}
+        {% endif %}
+    {% else %}
+        "action" : "reject",
+        "result" : {}
+    {% endif %}
+}

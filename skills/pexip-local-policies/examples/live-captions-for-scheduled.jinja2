@@ -1,0 +1,20 @@
+{
+    {# Enable live captions on scheduled conferences (alias prefix "88") only.    #}
+    {# Leaves all other service types unchanged.                                  #}
+
+    {% set pinsched_prefix = pex_regex_search("^(h323:88|sip:88|88).+", call_info.local_alias) %}
+    {{pex_debug_log("Call information", call_info) }}
+
+    {% if service_config %}
+        "action" : "continue",
+        {% if service_config.service_type == "conference" and pinsched_prefix %}
+            {{pex_debug_log("Enabling live captions for scheduled meeting", call_info.local_alias) }}
+            "result" : {{service_config|pex_update({"live_captions_enabled":"yes"})|pex_to_json}}
+        {% else %}
+            "result" : {{service_config|pex_to_json}}
+        {% endif %}
+    {% else %}
+        "action" : "reject",
+        "result" : {}
+    {% endif %}
+}

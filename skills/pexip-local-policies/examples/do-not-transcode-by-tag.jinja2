@@ -1,0 +1,17 @@
+{
+    {# Disable transcoding on any service whose service_tag is exactly             #}
+    {# "do-not-transcode". Apply this on SIP-to-SIP gateway rules where you want #}
+    {# Pexip to pass media through verbatim.                                       #}
+
+    {% if service_config %}
+        "action" : "continue",
+        {% if service_config.service_tag == "do-not-transcode" %}
+            "result" : {{service_config|pex_update({"transcoding_enabled": False})|pex_to_json}}
+        {% else %}
+            "result" : {{service_config|pex_to_json}}
+        {% endif %}
+    {% else %}
+        "action" : "reject",
+        "result" : {}
+    {% endif %}
+}

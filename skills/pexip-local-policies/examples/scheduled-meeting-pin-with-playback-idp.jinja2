@@ -1,0 +1,82 @@
+{
+    {# Scheduled meeting (alias prefix "88") with deterministic PINs and optional  #}
+    {# media-playback + IDP login for guests.                                      #}
+    {#                                                                              #}
+    {# Behaviour:                                                                   #}
+    {#   * meeting_pin = hash(secret + numeric_alias) suffix — acts as Host PIN    #}
+    {#     for callers from the trusted location ("VIDEOLAN") and as Guest PIN    #}
+    {#     for everyone else.                                                      #}
+    {#   * random_pin = hash(secret + numeric_alias) prefix — hidden "decoy" PIN. #}
+    {#   * Untrusted ("VIDEODMZ") callers are first routed into a media-playback  #}
+    {#     service (with IDP auth for WebRTC/api) which then transfers them into  #}
+    {#     the conference. The "88." prefix on the transfer marks "playback done".#}
+    {#                                                                              #}
+    {# Replace shared_secret, the location names, the IDP group, and the          #}
+    {# media_playlist ID before deploying. Use the same shared_secret in your     #}
+    {# Exchange Joining Instructions template so invitations show the PIN.        #}
+
+    {% set shared_secret      = "xxxxxxxxxxxxxxxxxxx" %}
+    {% set numeric_alias      = call_info.local_alias|pex_regex_replace('(sip:|h323:)?([\d\.]+)(@.+)?', '\\2') %}
+    {% set active_domain      = call_info.remote_alias|pex_regex_replace(".+@", "") %}
+    {% set completed_playback = False %}
+
+    {{pex_debug_log("Call protocol", call_info.protocol) }}
+
+    {% if numeric_alias.startswith("88.") %}
+        {% set numeric_alias      = numeric_alias|pex_regex_replace('88\.(.+)', '\\1') %}
+        {% set completed_playback = True %}
+    {% endif %}
+
+    {% set meeting_pin = [shared_secret, numeric_alias]|join|pex_hash|pex_tail(5) + "3" %}
+    {% set random_pin  = [shared_secret, numeric_alias]|join|pex_hash|pex_head(5) + "8" %}
+
+    {% if not numeric_alias.startswith("88") %}
+        "action" : "continue",
+        "result" : {}
+    {% elif call_info.location == "VIDEOLAN" or completed_playback %}
+        "action" : "continue",
+        "result" : {
+            "name"            : "{{numeric_alias}}",
+            "pin"             : {% if completed_playback %}"{{random_pin}}"{% else %}"{{meeting_pin}}"{% endif %},
+            "service_type"    : "conference",
+            "service_tag"     : "conference",
+            "guest_pin"       : {% if completed_playback %}"{{meeting_pin}}"{% else %}"{{random_pin}}"{% endif %},
+            "allow_guests"    : true,
+            "ivr_theme_name"  : "ababoy.com 30.08.2022",
+            "locked"          : true
+        }
+    {% elif call_info.location == "VIDEODMZ" and (call_info.protocol == "api" or call_info.protocol == "webrtc") %}
+        "action" : "continue",
+        "result" : {
+            "allow_guests"                 : true,
+            "name"                         : "callback-{{call_info.local_alias}}",
+            "service_type"                 : "media_playback",
+            "locked"                       : true,
+            "pin"                          : "{{random_pin}}",
+            "guest_pin"                    : "{{meeting_pin}}",
+            "guest_identity_provider_group": "SSO Ababoy.com",
+            "service_tag"                  : "video-playback",
+            "description"                  : "ve-call for {{call_info.local_alias}}",
+            "media_playlist"               : 2,
+            "on_completion"                : "{\"transfer\": {\"conference\": \"88.{{numeric_alias}}\"}}"
+        }
+    {% elif call_info.location == "VIDEODMZ" and call_info.protocol != "webrtc" %}
+        "action" : "continue",
+        "result" : {
+            "ivr_theme_name" : "ababoy.com 30.08.2022",
+            "allow_guests"   : true,
+            "name"           : "callback-{{call_info.local_alias}}",
+            "service_type"   : "media_playback",
+            "locked"         : true,
+            "pin"            : "{{random_pin}}",
+            "guest_pin"      : "{{meeting_pin}}",
+            "service_tag"    : "video-playback",
+            "description"    : "ve-call for {{call_info.local_alias}}",
+            "media_playlist" : 2,
+            "on_completion"  : "{\"transfer\": {\"conference\": \"88.{{numeric_alias}}\"}}"
+        }
+    {% else %}
+        "action" : "continue",
+        "result" : {}
+    {% endif %}
+}

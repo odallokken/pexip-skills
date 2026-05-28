@@ -395,3 +395,168 @@ Anonymises the alias and display name of any caller whose user-part parses as an
     {% endif %}
 }
 ```
+
+---
+
+## Field-tested patterns from production deployments
+
+The next batch of examples come from real customer deployments rather than the Pexip
+documentation, and cover more advanced situations: SfB/Teams integration, deterministic
+PINs, media-playback chaining, time-based capacity protection, anti-overwrite ADP
+patterns, etc. Each has a standalone copy/paste file in `../examples/`.
+
+## 19. Enable overlay text for gateway calls by service tag
+
+Set `enable_overlay_text=true` on gateway services whose tag begins with `overlaytext`.
+Primarily useful for Skype/Teams gateway rules. See
+[`overlay-text-for-gateway-by-tag.jinja2`](../examples/overlay-text-for-gateway-by-tag.jinja2).
+
+## 20. Force overlay text everywhere
+
+Single-line override that flips `enable_overlay_text` on for every resolved service —
+no per-VMR config needed. See
+[`force-text-overlay-everywhere.jinja2`](../examples/force-text-overlay-everywhere.jinja2).
+
+## 21. Overlay text only for scheduled meetings
+
+Same idea as §19 but gated by an alias regex (here `77NNNNNN`) so only scheduled
+conferences get the overlay. See
+[`text-overlay-for-scheduled.jinja2`](../examples/text-overlay-for-scheduled.jinja2).
+
+## 22. Live captions for scheduled meetings
+
+Sets `live_captions_enabled="yes"` on conferences whose alias starts with `88`
+(scheduled-meeting prefix). Leaves other service types untouched. See
+[`live-captions-for-scheduled.jinja2`](../examples/live-captions-for-scheduled.jinja2).
+
+## 23. Auto-dial the owner's email as an MS-SIP ADP for scheduled meetings
+
+When a scheduled meeting (alias prefix `88`) is owned by an `@pexip.com` user, append an
+ADP that dials the owner's email over MS-SIP at chair role. Demonstrates reading
+`service_config.primary_owner_email_address` populated from the AD-linked schedule. See
+[`adp-mssip-for-scheduled-by-email.jinja2`](../examples/adp-mssip-for-scheduled-by-email.jinja2).
+
+## 24. Append an ADP without overwriting existing ones
+
+`pex_update({"automatic_participants": [...]})` REPLACES the list. To *add* to it without
+disturbing ADPs already configured on the VMR, mutate `service_config.automatic_participants`
+in place with `list.extend([...])`. The Jinja2 idiom is `{{ adps.extend([...]) or "" }}` —
+the `or ""` is required because `extend` returns `None` and Jinja2 would otherwise emit
+literal `None` into the output and break JSON. See
+[`add-adp-without-overwriting.jinja2`](../examples/add-adp-without-overwriting.jinja2).
+
+## 25. Dial out to the owner over MS-SIP on first guest entry only
+
+Differentiate the host's own endpoint from guest joiners using a whitelist of
+`(remote_alias, local_alias)` tuples (`exec`). Hosts join silently; guests trigger an MS-SIP
+ADP towards `service_config.primary_owner_email_address`. Clear any pre-existing ADPs on
+the VMR first. See
+[`dial-out-to-s4b-on-guest.jinja2`](../examples/dial-out-to-s4b-on-guest.jinja2).
+
+## 26. Ad-hoc VMR for Skype-for-Business Focus GRUU dial-in
+
+When the dialed alias matches `sip:user@domain;gruu;opaque=app:conf:focus:id:<gruu>` (an
+SfB meeting Focus URI), synthesise a brand-new VMR on the fly and add an MS-SIP ADP that
+dials back into the SfB meeting. Video endpoints join the VMR (and see a real Pexip
+mixed layout); SfB sees a single merged stream. Trade-offs documented inline in the
+script (lower HW cost vs. no SfB-side roster control of VC endpoints). See
+[`skype-meeting-adhoc-vmr.jinja2`](../examples/skype-meeting-adhoc-vmr.jinja2).
+
+## 27. Override the "from" alias and display name on outbound gateway B-legs
+
+Useful when interop with the far end needs a particular caller identity that does not
+match the dial-in alias. Works only for straight point-to-point gateway calls — not VMRs
+nor AVCMU-escalated calls. See
+[`override-outbound-gateway-from.jinja2`](../examples/override-outbound-gateway-from.jinja2).
+
+## 28. Rewrite a VMR into an outbound gateway leg by prefix
+
+E.164-only systems can dial a numeric extension and reach the user's Skype URI: when the
+dialed alias starts with `55`, flip `service_type` from `conference` to `gateway`, set
+the MS-SIP proxy, and use `service_config.description` (the user's SfB URI populated by
+AD provisioning) as the outbound `remote_alias`. See
+[`vmr-as-gateway-by-prefix.jinja2`](../examples/vmr-as-gateway-by-prefix.jinja2).
+
+## 29. PIN-less join only for a specific (endpoint, VMR) pair
+
+Whitelist `(remote_alias, local_alias)` tuples in `exec`; only when both match are PINs
+stripped and the conference forced host-only. Caveat: same as §6/§7 — guest-disconnect
+behaviour can be quirky for PIN-less host-only conferences. See
+[`pinless-by-endpoint-vmr-mapping.jinja2`](../examples/pinless-by-endpoint-vmr-mapping.jinja2).
+
+## 30. Force audio-only for specific User-Agents
+
+`pex_update({"call_type":"audio"})` when `call_info.vendor` is in a list of known-bad
+WebRTC builds. Caveat: if a forced-audio UA is the FIRST participant on a Conferencing
+Node, other participants on the same node may also be limited to audio. See
+[`force-audio-only-by-vendor.jinja2`](../examples/force-audio-only-by-vendor.jinja2).
+
+## 31. Bandwidth override for a list of dial-in endpoints
+
+For named H.323 dial-in endpoints, set both `max_callrate_in` and `max_callrate_out`
+explicitly (here, 4 Mbps). All other calls pass through unchanged. See
+[`bandwidth-override-by-alias.jinja2`](../examples/bandwidth-override-by-alias.jinja2).
+
+## 32. Trust selected domains for Teams CVI
+
+Set `treat_as_trusted=True` on Teams CVI calls (Call Routing Rule tagged `TEAMS`) whose
+SIP `remote_alias` ends with a known internal domain. Lets trusted callers skip the
+Teams lobby. See
+[`trust-domains-for-teams-cvi.jinja2`](../examples/trust-domains-for-teams-cvi.jinja2).
+
+## 33. Country-coded audio steering for an Avaya gateway
+
+Customer use-case: the calling endpoint name embeds a 2-letter country code; the policy
+extracts it (two alternative regexes), looks up the matching steering code, and prepends
+it to the destination alias so Avaya routes to the correct PSTN gateway. US/CA need no
+prefix. Triggered only by routing rules tagged `dellAudio`. See
+[`audio-steering-code-by-country.jinja2`](../examples/audio-steering-code-by-country.jinja2).
+
+## 34. Priority-meeting capacity protection (weekday + time)
+
+Every Monday 08:00–09:00 Helsinki time, redirect every non-priority call into a short
+media-playback announcement and disconnect — preserving port-license and transcoding
+capacity for the all-hands meeting (which keeps its tag `allowmeeting` and is allowed
+through). The Zeller's-congruence-style block computes the weekday from `pex_now()`.
+Requires a media-playback source and playlist both named `allhands_meeting_message`.
+See [`priority-meeting-by-weekday.jinja2`](../examples/priority-meeting-by-weekday.jinja2).
+
+## 35. Media playback before a Teams gateway call
+
+For inbound dial-ins of the form `88<9-13 digits>@pex.vc` hitting a rule whose tag
+contains `greg`, play the `greg_dod` playlist and on completion `transfer` to alias
+`89<teams_id>` (the actual Teams gateway routing rule). Pattern is reusable for any
+"play something before joining" workflow. See
+[`media-playback-before-teams.jinja2`](../examples/media-playback-before-teams.jinja2).
+
+## 36. Media playback before a VMR (preserving PIN + IDP context)
+
+For aliases starting with `sso`, route into a media-playback service that inherits the
+target VMR's PIN, guest PIN, host IDP group and `allow_guests` setting — so the caller
+authenticates against the playback service, and the authentication context survives the
+`on_completion` transfer into the real VMR. Assumes the VMR has a second alias dedicated
+to this "playback first" entry path. See
+[`media-playback-before-vmr.jinja2`](../examples/media-playback-before-vmr.jinja2).
+
+## 37. Deterministic-PIN scheduled meeting with playback + IDP (V.2)
+
+Combined recipe that:
+
+- Generates two PINs deterministically from a shared secret + the numeric alias
+  (`pex_hash | pex_tail` and `pex_hash | pex_head`). One acts as Host PIN, the other as
+  a hidden Guest PIN (decoy). Roles are flipped depending on `call_info.location` so
+  trusted-location callers get the host role and untrusted callers get the guest role.
+- For untrusted callers from `VIDEODMZ`, first routes into a `media_playback` service
+  that requires IDP login (for WebRTC/api) and then transfers to the real conference
+  using an `88.` prefix as a "playback completed" marker.
+- VMR is created `locked=true` so hosts must explicitly admit guests.
+
+The Exchange Joining Instructions template must use the *same* `shared_secret` to render
+the PIN into the meeting invitation. See
+[`scheduled-meeting-pin-with-playback-idp.jinja2`](../examples/scheduled-meeting-pin-with-playback-idp.jinja2).
+
+## 38. Do not transcode (by service tag)
+
+One-liner: when `service_tag == "do-not-transcode"`, set `transcoding_enabled=False`.
+Apply on SIP-to-SIP gateway rules where Pexip should pass media through unchanged. See
+[`do-not-transcode-by-tag.jinja2`](../examples/do-not-transcode-by-tag.jinja2).

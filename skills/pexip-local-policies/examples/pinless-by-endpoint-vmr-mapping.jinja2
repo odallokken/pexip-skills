@@ -1,0 +1,28 @@
+{
+    {# Associate specific endpoints with specific VMRs to allow them to bypass the  #}
+    {# PIN. The `exec` tuple is a whitelist of (caller_alias, dialed_vmr_alias)     #}
+    {# pairs — when the call matches both, PINs are stripped and allow_guests is    #}
+    {# disabled so the conference is host-only.                                     #}
+    {# Caveat: guest-disconnection-on-host-leave can misbehave because a PIN-less   #}
+    {# VMR is a host-only conference; the "host has left" announcement won't play.  #}
+
+    {% set exec = [
+        ("sip:big.boss@ipt.anz.co.nz", "sip:meet.big.boss@customer.com"),
+        ("sip:dennis@customer.com",    "sip:611137@customer.com"),
+        ("sip:42111@10.108.110.11",    "sip:66174@customer.com"),
+        ("sip:dennis.ep@customer.com", "sip:meet.dennis@customer.com")
+    ] %}
+
+    {% if service_config %}
+        "action" : "continue",
+        {% if (call_info.remote_alias, call_info.local_alias) in exec %}
+            {{pex_debug_log("Pinless join matched FROM:", call_info.remote_alias, "TO:", call_info.local_alias) }}
+            "result" : {{service_config|pex_update({"pin":"", "guest_pin":"", "allow_guests": False})|pex_to_json}}
+        {% else %}
+            "result" : {{service_config|pex_to_json}}
+        {% endif %}
+    {% else %}
+        "action" : "reject",
+        "result" : {}
+    {% endif %}
+}

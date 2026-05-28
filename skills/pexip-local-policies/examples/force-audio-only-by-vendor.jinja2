@@ -1,0 +1,22 @@
+{
+    {# Force certain User-Agents (`call_info.vendor`) into audio-only mode.        #}
+    {# Useful for buggy WebRTC clients that misbehave with video.                  #}
+    {# Caveat: if a forced-audio UA is the FIRST participant on a Conferencing    #}
+    {# Node, other participants on the same node may also be limited to audio.    #}
+
+    {% set force_audio_uas = [
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/54.0.2840.100 Safari/537.36"
+    ] %}
+
+    {% if service_config %}
+        "action" : "continue",
+        {% if call_info.vendor in force_audio_uas %}
+            "result" : {{service_config|pex_update({"call_type": "audio"})|pex_to_json}}
+        {% else %}
+            "result" : {{service_config|pex_to_json}}
+        {% endif %}
+    {% else %}
+        "action" : "reject",
+        "result" : {}
+    {% endif %}
+}

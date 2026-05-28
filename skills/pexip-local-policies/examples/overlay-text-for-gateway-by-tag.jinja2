@@ -1,0 +1,18 @@
+{
+    {# Enable text overlay on gateway calls whose service tag starts with "overlaytext". #}
+    {# Primarily intended for Skype / Teams gateway rules where you want the caller's   #}
+    {# alias rendered on top of the video. Tag a gateway Call Routing Rule with         #}
+    {# "overlaytext..." to opt it in.                                                   #}
+
+    {% if service_config %}
+        "action" : "continue",
+        {% if service_config.service_type == "gateway" and service_config.service_tag.startswith("overlaytext") %}
+            "result" : {{service_config|pex_update({"enable_overlay_text": true})|pex_to_json}}
+        {% else %}
+            "result" : {{service_config|pex_to_json}}
+        {% endif %}
+    {% else %}
+        "action" : "reject",
+        "result" : {}
+    {% endif %}
+}

@@ -1,0 +1,25 @@
+{
+    {# Mark Teams CVI calls as "trusted" when the SIP remote alias belongs to a    #}
+    {# known internal domain. Scoped to the Teams CVI routing rule via             #}
+    {# `service_tag == "TEAMS"` — set that tag on the relevant Call Routing Rule.  #}
+
+    {% set trusted_domains = ("@pexip.com", "@vp.pexip.com") %}
+
+    {{pex_debug_log("Call information",    call_info) }}
+    {{pex_debug_log("Service information", service_config) }}
+
+    {% if service_config %}
+        "action" : "continue",
+        {% if call_info.remote_alias.endswith(trusted_domains)
+              and call_info.call_direction == "dial_in"
+              and service_config.service_tag == "TEAMS" %}
+            {{pex_debug_log("Trusting Teams CVI caller", call_info.remote_alias) }}
+            "result" : {{service_config|pex_update({"treat_as_trusted": True})|pex_to_json}}
+        {% else %}
+            "result" : {{service_config|pex_to_json}}
+        {% endif %}
+    {% else %}
+        "action" : "reject",
+        "result" : {}
+    {% endif %}
+}

@@ -1,0 +1,29 @@
+{# Add an extra ADP to a VMR WITHOUT overwriting any ADPs already defined on the   #}
+{# service configuration. `pex_update({"automatic_participants": [...]})` replaces #}
+{# the list wholesale; using list.extend() mutates service_config in place so the  #}
+{# existing ADPs survive. The trailing `or ""` is required because Jinja2 will    #}
+{# otherwise render `None` into the output and break JSON parsing.                #}
+
+{% set adps = service_config.automatic_participants %}
+{% if adps %}
+  {{ adps.extend([{
+      "description"          : "Extra ADP",
+      "local_alias"          : "extraadps@example.com",
+      "local_display_name"   : "Call from the VMR",
+      "protocol"             : "sip",
+      "remote_alias"         : "sip:extraadp@example.com",
+      "remote_display_name"  : "Miss Annable De Participant",
+      "role"                 : "chair",
+      "system_location_name" : "London"
+  }]) or "" }}
+{% endif %}
+
+{
+    {% if service_config %}
+        "action" : "continue",
+        "result" : {{service_config|pex_to_json}}
+    {% else %}
+        "action" : "reject",
+        "result" : {}
+    {% endif %}
+}
