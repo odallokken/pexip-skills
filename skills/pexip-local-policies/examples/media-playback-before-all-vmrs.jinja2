@@ -35,6 +35,15 @@
     {#                           `call_info.previous_service_name`.            #}
     {#    PLAYLIST_ID          : numeric ID of the Media Playlist configured  #}
     {#                           under Call control > Media playlists.        #}
+    {#                                                                         #}
+    {#  Debugging                                                              #}
+    {#  ---------                                                              #}
+    {#  To diagnose issues, temporarily add a debug line at the top of the    #}
+    {#  main `{% if service_config %}` block, then grep the support log for   #}
+    {#  the prefix string:                                                     #}
+    {#    {{ pex_debug_log("vmr-preroll policy", call_info, service_config) }} #}
+    {#  Remove it again once the script is behaving — debug lines bloat the   #}
+    {#  support log and trigger rotation.                                      #}
     {#-------------------------------------------------------------------------#}
 
     {% set PLAYBACK_NAME_PREFIX = "vmr-preroll:" %}
@@ -46,7 +55,6 @@
     {% set is_post_playback_leg = prev.startswith(PLAYBACK_NAME_PREFIX) %}
 
     {% if service_config %}
-        {{ pex_debug_log("vmr-preroll policy", call_info, service_config) }}
 
         {#-- Only intercept on inbound dial-in to a real VMR (conference),  --#}
         {#-- and only if this is NOT the post-playback transfer leg.        --#}
