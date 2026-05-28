@@ -1,0 +1,1165 @@
+
+
+Policy #1
+
+Add textoverlay to gateway rules (primarely for Skype Meetings)
+
+This local policy service config will check if a call is a gateway call, and if the call routing rule we are hitting has "overlaytext" as the start of the service tag.
+
+{
+     
+    {# Checking if there is a valid service config for the dialed alias #}
+ 
+    {% if service_config  %}
+        "action" : "continue",
+ 
+        {# Checking if service_type = gaeway, AND the tag starts with "overlaytext" #}
+ 
+        {% if service_config.service_type == "gateway" and service_config.service_tag.startswith("overlaytext") %}
+ 
+ 
+            {# if it does, flip the switch for enable_overlay_text to true #}
+ 
+            "result" : {{service_config|pex_update({"enable_overlay_text": true})|pex_to_json}}
+ 
+        {% else %}
+ 
+            {# if it does not - no changes done #}
+ 
+            "result" : {{service_config|pex_to_json}}
+ 
+        {% endif %} 
+ 
+    {# If there were no service config for the dialed alias, the call will be rejected (as it normally would) #}
+ 
+    {% else %}
+        "action" : "reject",
+        "result" : {}
+    {% endif %}
+}
+
+=======================
+
+Policy #2
+
+Adding ADP of email address as MSSIP for scheduled conferences (maybe possible in v16 or later, email field not in service_config in v15)
+
+** Use case: User with email marius@pexip.com schedules a VMR and the sched prefix is 88. When someone dials the scheduled VMR, the Skype for Business (mssip) client of xxxxx@pexip.com should be dialed. Sched prefix will need adjusting to your deployment, so does the email suffix and if you do not want a MSSIP dialout but another protocol you may have to change this, and you may have to regex the email.
+
+{
+    {% if service_config %}
+        {#{pex_debug_log("### service_config ### = ", service_config) }#}
+        {#{pex_debug_log("### call_info ### = ", call_info) }#}
+ 
+        "action" : "continue",
+ 
+    {% if service_config.service_type == "conference" and call_info.local_alias.startswith("88") and service_config.primary_owner_email_address.endswith("@pexip.com") %}
+ 
+               {{pex_debug_log("This is a 88 scheduled meeting - Dialed alias is ", call_info.local_alias, " and email for this VMR is ", service_config.primary_owner_email_address) }}
+ 
+               "result" : {{service_config|pex_update({"automatic_participants" :  [{"remote_alias":service_config.primary_owner_email_address, "local_alias":call_info.local_alias,"protocol":"mssip","role":"chair" }]})|pex_to_json}}
+ 
+    {% else %}
+        "result" : {{service_config|pex_to_json}}
+    {% endif %}
+ 
+    {% else %}
+        "action" : "reject",
+        "result" : {}
+    {% endif %}
+}
+
+============================
+
+Policy #3
+
+
+Adding an ADP (Automated dialed participant)
+
+
+To add an ADP via local policy, this can't be done with pex_update since that will overwrite what's in the automatic_participants array.
+
+Instead, you will need to do this:
+
+{% set adps = service_config.automatic_participants %}
+{% if adps %}
+  {{ adps.extend( [{
+    "description": "Extra ADP", 
+    "local_alias": "extraadps@example.com", 
+    "local_display_name": "Call from the VMR", 
+    "protocol": "sip", 
+    "remote_alias": "sip:extraadp@example.com", 
+    "remote_display_name": "Miss Annable De Participant", 
+    "role": "chair", 
+    "system_location_name": "London"
+    }]) or "" }}
+{% endif %}
+
+{
+  {% if service_config %}
+    "action" : "continue",
+    "result" : {{service_config|pex_to_json}}
+  {% else %}
+    "action" : "reject",
+    "result" : {}
+  {% endif %}
+}
+This obviously can be put inside an "if" block. Note two things: the 'or "" ' since we need a string, not None, in this situation, and note also that this updates service_config directly so no need to do any pex_updating.
+
+
+==============================
+
+Policy #4
+
+Associate endpoints with VMRs to allow pin-less join
+
+Caveat: guest disconnection may not always work as intended when hosts leave if they were the first to join (also: "host has left the conference" announcement won't be played) because a VMR without PINs is a host only conference.
+
+{% set exec = [("sip:big.boss@ipt.anz.co.nz", "sip:meet.big.boss@customer.com"),
+("sip:dennis@customer.com", "sip:611137@customer.com"),
+("sip:42111@10.108..110.11", "sip:66174@customer.com"),
+("sip:dennis.ep@customer.com", "sip:meet.dennis@customer.com")] %}
+{
+    {% if service_config %}
+        "action" : "continue",
+        {% if (call_info.remote_alias, call_info.local_alias) in exec %}
+        {{pex_debug_log("******** Policy. Matched from: ", call_info.remote_alias, "TO: ", call_info.local_alias) }}
+            "result" : {{service_config|pex_update({"pin":"", "guest_pin":"", "allow_guests" : False})|pex_to_json}}
+        {% else %}
+            "result" : {{service_config|pex_to_json}}
+        {% endif %}
+    {% else %}
+        "action" : "reject",
+        "result" : {}
+    {% endif %}
+}
+
+
+==============================
+
+Policy #5
+
+Auto create VMR and ADP to Skype Meeting
+
+
+This policy will take any call with ;gruu;opaque=app:conf:focus:id: and in stead of doing separate GW call (meaning VC endpoints communicate via the Skype meeting) it will create a ad-hoc VMR, and auto dial out to the SfB meeting.
+
+Advantages: Better audio/video quality between VC endpoints, lower HW usage (with GW: 3.5 HD, with VMR: 1 HD), video endpoints can still see a mixed layout of SfB participants and Video endpoints.
+Disadvantages: SfB users does not get roster list control, SfB users see one merged participant stream being the ad-hoc VMR, default 1+7 layout in this script, SfB users with a conference where they have to admit every participant, will only have control of the first one, the next one is admitted automatically given that the SfB meeting has admitted the ad-hoc VMR, name in the participant list in SfB will be a generic name (name of the ADP dialout)
+Review any parts of this script that has a comment with pexCheck to decide how you would like the script to run in your deployment.
+
+{
+    {# Remove outer hashes from the two next line to print debug info in support log - recomment before going prod! #}
+    {#{pex_debug_log("##### call_info ##### ", call_info) }#}
+    {#{pex_debug_log("##### service_config ##### ", service_config) }#}
+ 
+    {% set s4buser = call_info.local_alias|pex_regex_replace('^sip:(.+)@(.+);gruu;opaque=app:conf:focus:id:([a-z0-9A-Z]+)', '\\1' ) %}
+    {% set s4bdomain = call_info.local_alias|pex_regex_replace('^sip:(.+)@(.+);gruu;opaque=app:conf:focus:id:([a-z0-9A-Z]+)', '\\2') %}
+    {% set s4bgruu   = call_info.local_alias|pex_regex_replace('^sip:(.+)@(.+);gruu;opaque=app:conf:focus:id:([a-z0-9A-Z]+)', '\\3') %}
+ 
+ 
+         {# Checking if call_info.local_alias contains a GRUU #}
+         {% if  ";gruu;opaque=app:conf:focus:id:" in call_info.local_alias %}
+            {{pex_debug_log("-----------------  MATCH for GRUU OPAQUE = APP CONF FOCUS ID ----------------- ") }}
+            {{pex_debug_log("service_config Policy : Adding ADP for SFB conference ", call_info.location, " protocol", call_info.protocol, " destination user", s4buser, " destination domain", s4bdomain, " destination GRUU", s4bgruu, " FROM: ", call_info.remote_alias) }}
+ 
+            "action" : "continue",
+            "result" : {
+                "service_type" : "conference",
+                "name" : "{{s4buser}}@{{s4bdomain}} Skype Meeting ({{s4bgruu}})",   {# pexCheck: Name format of VMR #}
+                "service_tag" : "Triggered by first Video endpoint: {{call_info.remote_alias}} ({{call_info.protocol}}) - S4B USER {{s4buser}} - GRUU {{s4bgruu}}",
+                "description" : "{{s4buser}} ({{s4bgruu}}) - trigger {{call_info.remote_alias}} ({{call_info.protocol}})",
+ 
+                 {# pexCheck: Set a random long PIN and allow_guests = true if you prefer VC endpoints to not join the merged VMR prior  #}
+                 {#  to first SfB user letting them in, VC endpoints will also be teared down after configured teardown buffer in global config #}
+                "pin" : "",
+                "allow_guests" : false,
+                "guest_pin" : "",
+ 
+                {# pexCheck: Uncomment (remove the first/last two characters of the line) the next line to add DING for joiners and leavers #}
+                {# "ivr_theme_name" : "Pexip theme (English_US) with entry tones", #}               
+                "view" : "one_main_seven_pips",    {# pexCheck: The layout used in the merged VMR (shown on both SfB side and endpoint side) #}
+                "automatic_participants" : 
+                                [
+                                {"remote_alias":"{{call_info.local_alias}}",
+                                "local_alias":"VMR-{{s4buser}}", {# pexCheck: if you want the URI of the first endpoint, add {{call_info.remote_alias}} #}
+                                "local_display_name":"VC", {# pexCheck: Name of the merged participant in the SfB meeting #}
+                                "description":"ADP to SfB",
+                                "protocol":"mssip",
+                                "routing":"manual",
+                                "role":"guest", {# pexCheck: change value from "guest" to "chair" if conference is set up with a PIN #}
+                                "keep_conference_alive": "keep_conference_alive_never",
+                                "system_location_name":"Location A" }
+                                ]
+                        }
+        {% else %}
+ 
+        {# If call_info.local_alias did not contain a GRUU, we proceed to check if normal service config would apply #}
+ 
+           {% if service_config %}
+                    "action" : "continue",
+                    "result" : {{service_config|pex_to_json}}
+ 
+            {# And if it does not, we will reject the call #}
+ 
+            {% else %}
+                    "action" : "reject",
+                    "result" : {}
+            {% endif %}
+ 
+    {% endif %}
+ 
+}
+
+==============================
+
+Policy #6
+
+Auto dial out to S4B on guest entry only
+
+Here is an example local policy script, when guests call in it will dial the primary_owner_email_address set against the VMR as MSSIP, when the host calls in no ADP's will be dialled, this has to match the remote and local alias in set exec. I haven't tested this with existing ADPs added the VMR, you may have to remove these.
+
+
+{% set exec = [("sip:host1.endpoint1@domain.com", "sip:vmr.alias.host1@domain.com")] %}
+{% set adp_dial = service_config.primary_owner_email_address %}
+{
+    {% if service_config %}
+        "action" : "continue",
+    {% if (call_info.remote_alias, call_info.local_alias) not in exec and adp_dial is defined %}
+        {{pex_debug_log("### Policy Matched from:", call_info.remote_alias, "TO:", call_info.local_alias, " - ADP added") }}
+        "result" : {{service_config|pex_update({"automatic_participants" :  [{"remote_alias": adp_dial,"local_alias": call_info.local_alias,"protocol":"mssip","role":"chair"}]})|pex_to_json}}
+    {% else %}
+        {{pex_debug_log("### Policy Matched from:", call_info.remote_alias, "TO:", call_info.local_alias, " - No ADP added") }}
+        "result" : {{service_config|pex_to_json}}
+    {% endif %}
+    {% else %}
+        "action" : "reject",
+        "result" : {}
+    {% endif %}
+}
+
+Set the hosts endpoint alias and the VMR alias matches in set exec, for example
+
+{% set exec = [("sip:host1.endpoint1@domain.com", "sip:vmr.alias.host1@domain.com"),
+("mssip:host2.endpoint1@domain.com", "sip:vmr.alias.host2@domain.com"),
+("sip:host3.endpoint1@domain.com", "sip:vmr.alias.host3@domain.com")] %}
+
+
+==============================
+
+Policy #7
+
+Controlling the "from" alias and display name for outbound gateway B legs
+
+
+Note this only works for straight "point to point"  gateway calls; not VMRs nor AVCMU escalated calls at present.
+
+
+
+                {
+
+                    {% if service_config %}
+                        "action" : "continue",
+                        "result" : {{service_config|pex_update({"local_alias":"policylocalalias@domain.com", "local_display_name":"Policy controlled Display Name"})|pex_to_json}}
+                    {% else %}
+                        "action" : "reject",
+                        "result" : {}
+                    {% endif %}
+                }
+
+
+==============================
+
+Policy #8
+
+Create GW rule from VMR
+
+** Use case: Provision VMRs from AD with phone extension (ipphone etc) as alias, and when this extension is dialled, rewrite to MS-SIP call to the relevant user. This to allow E164 only based systems to dial a Skype URI by dialling the extension (or a prefix then the extension). In this examples all numbers dialled with 55 as a prefix should be rewritten this way, you probably would like to limit that a lot more!
+
+{
+  {{pex_debug_log("call_info ", call_info) }}
+  {{pex_debug_log("service_config ", service_config) }}
+ 
+  {% if service_config %}
+    "action" : "continue",
+ 
+    {% if service_config.service_type == "conference" and call_info.local_alias.startswith("55") %}
+ 
+      {{pex_debug_log("This is a 55 meeting - yiiiiha - Service type is ", service_config.service_type) }}
+ 
+        "result" : {{service_config|pex_update({"service_type": "gateway", "mssip_proxy_name" : "oslo-lync-fe", "outgoing_protocol": "mssip", "local_display_name" : call_info.remote_display_name, "local_alias": call_info.remote_alias, "remote_alias": service_config.description})|pex_to_json}}
+ 
+    {% else %}
+ 
+        "result" : {{service_config|pex_to_json}}
+    {% endif %}
+  {% else %}
+     "action" : "reject",
+     "result" : {}
+  {% endif %}
+}
+
+
+==============================
+
+Policy #9
+
+Enable Text Overlay for scheduled conferences
+
+{
+    {%set scheduled = false %}
+    {% if service_config %}
+    {% if call_info.local_alias|pex_regex_replace("^(h323:|sip:)?77(\d{6})(@vc.pexip.com.au)?", "scheduled") == "scheduled" %}
+        {% set scheduled = true %}
+    {% endif %}
+        "action" : "continue",
+        {% if scheduled %}
+        {{pex_debug_log("Policy. Turning on text ovelay for scheduled conference: ", call_info.local_alias) }}
+            "result" : {{service_config|pex_update({"enable_overlay_text": true})|pex_to_json}}
+        {% else %}
+            "result" : {{service_config|pex_to_json}}
+        {% endif %}
+    {% else %}
+        "action" : "reject",
+        "result" : {}
+    {% endif %}
+}
+
+==============================
+
+Policy #10
+
+Force certain UAs to be audio only.
+
+Note: One limitation (bug?): if the first participant into the VMR on a given Pexip node is using one of the UAs listed in force_audio_uas then other participants on the same node are limited to audio only too.
+
+{
+    {% set  force_audio_uas = ["Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/54.0.2840.100 Safari/537.36"] %}
+    {% if service_config  %}
+        {% if call_info.vendor in force_audio_uas %}
+            "action" : "continue",
+            "result" : {{service_config|pex_update({"call_type": "audio"})|pex_to_json}}
+        {% else %}
+            "action" : "continue",
+            "result" : {{service_config|pex_to_json}}
+        {% endif %}
+    {% else %}
+        "action" : "reject",
+        "result" : {}
+    {% endif %}
+}
+
+==============================
+
+Policy #11
+
+Force text overlay everywhere (without having to modify each VMR individually)
+
+{
+    {% if service_config  %}
+        "action" : "continue",
+        "result" : {{service_config|pex_update({"enable_overlay_text": true})|pex_to_json}}
+    {% else %}
+        "action" : "reject",
+        "result" : {}
+    {% endif %}
+}
+
+==============================
+
+Policy #12
+
+Inject an ADP into every VMR:
+
+{
+    {% if service_config %}
+        {{pex_debug_log("service_config=", service_config) }}
+        "action" : "continue",
+        "result" : {{service_config|pex_update({"automatic_participants" :  [{"remote_alias":"participant@domain.com","local_alias":"policyuser@domain.com","local_display_name":"Internal Policy ADP","description":"Dial out to an ADP","protocol":"sip","role":"chair","system_location_name":"LocationA" }]})|pex_to_json}}
+    {% else %}
+        "action" : "reject",
+        "result" : {}
+    {% endif %}
+}
+
+==============================
+
+Policy #13
+
+Lock conference when first participant connects by adding "locked" at the start of the service tag.
+
+** Use case: set a conference to locked state when first participant connects (Regardless of host/guest), so host must manually unlock with *7 or Pexip app to let someone in.
+
+{
+    {% if service_config %}
+        {#{pex_debug_log("### service_config ### = ", service_config) }#}
+        {#{pex_debug_log("### call_info ### = ", call_info) }#}
+ 
+        "action" : "continue",
+ 
+    {% if service_config.service_type == "conference" and service_config.service_tag.startswith("locked") %}
+ 
+               {{pex_debug_log("This is a VMR that should be locked - Dialed alias is ", call_info.local_alias, " and service_tag for this VMR is ", service_config.service_tag) }}
+ 
+               "result" : {{service_config|pex_update({"locked":true })|pex_to_json}}
+ 
+    {% else %}
+        "result" : {{service_config|pex_to_json}}
+    {% endif %}
+ 
+    {% else %}
+        "action" : "reject",
+        "result" : {}
+    {% endif %}
+}
+
+
+==============================
+
+Policy #14
+
+Remove PIN for people in internal locations (LocationA or Location C) but require pin for everyone else:
+
+Caveat: guest disconnection may not always work as intended when hosts leave if they were the first to join (also: "host has left the conference" announcement won't be played) because a VMR without PINs is a host only conference.
+
+{
+    {% if service_config %}
+        "action" : "continue",
+        {% if call_info.location == "LocationA" or call_info.location == "LocationC" %}
+            "result" : {{service_config|pex_update({"pin":"", "guest_pin":"", "allow_guests" : False})|pex_to_json}}
+        {% else %}
+            "result" : {{service_config|pex_to_json}}
+        {% endif %}
+    {% else %}
+        "action" : "reject",
+        "result" : {}
+    {% endif %}
+}
+
+==============================
+
+Policy #15
+
+Remove PIN for people using registered devices but require pin for everyone else:
+
+Caveat: guest disconnection may not always work as intended when hosts leave if they were the first to join (also: "host has left the conference" announcement won't be played) because a VMR without PINs is a host only conference.
+
+{
+    {% if service_config %}
+        "action" : "continue",
+        {% if call_info.registered %}
+            "result" : {{service_config|pex_update({"pin":"", "guest_pin":"", "allow_guests" : False})|pex_to_json}}
+        {% else %}
+            "result" : {{service_config|pex_to_json}}
+        {% endif %}
+    {% else %}
+        "action" : "reject",
+        "result" : {}
+    {% endif %}
+}
+
+==============================
+
+Policy #16
+
+V.2 Scheduled meeting with PIN where PIN acts a host PIN for "trusted" participants and as Guest PIN for "untrusted"participants (location based). And do video playback for guests + IDP login for guests using WebApp.
+
+In this example we will combine a local policy and Exchange Scheduling template to generate a PIN for scheduled meetings. The PIN will act as a Host PIN for “trusted” participants calling in through “LocationA”. All other participants that call through any other location will be “untrusted” and the PIN will act as a Guest PIN. We will also generate a “random” pin that will be hidden and set as Guest PIN for participants calling through “LocationA”, and set as a hidden Host PIN for all other participants.
+
+The first step is to generate the PIN codes. The PIN codes are created in two parts based on a static “secret” passphrase:
+
+
+
+{% set shared_secret = "xxxxxxxxxxxxxxxxxxx" %}
+…and the part of the URI dialed for the scheduled meeting:
+
+
+
+{% set numeric_alias = call_info.local_alias|pex_regex_replace('(sip:|h323:)?(\d+)(@.+)?', '\\2' ) %}
+The two variables are combined and hashed to make up part of the PIN codes.
+
+The “meeting_pin” and the “random_pin” is created based on the variables above:
+
+
+
+{% set meeting_pin = [shared_secret,numeric_alias]|join|pex_hash|pex_tail(5) + "3" %}
+{% set random_pin  = [shared_secret,numeric_alias]|join|pex_hash|pex_head(5) + "8" %}
+The PINs are really only 5 digits that are random. The last digit is static for logging purposes in this example to determine that the script actually works. This can be adapted to your requirements.
+
+We need to filter out conferences starting with the scheduled conference prefix “88”:
+
+
+
+{% if service_config.service_type == "conference" and (call_info.local_alias.startswith("h323:88") or call_info.local_alias.startswith("sip:88") or call_info.local_alias.startswith("88")) %}
+The next step is to set what locations are “trusted” and will use the PIN as Host PIN (“meeting_pin”), and all other participants calling through any other locations are “untrusted” and will use the PIN as Guest PIN (“meeting_pin”). The “random_pin” which is “unknown” will be set as Guest PIN for trusted participants calling through the specified locations (LocationA), and as Host PIN for all other participants/ locations:
+
+
+
+{{pex_debug_log("This is a 88 scheduled meeting - Dialed alias is ", call_info.local_alias) }}
+ {% if call_info.location == "LocationA" %}
+    {{pex_debug_log("Call is INTERNAL arriving in ", call_info.location, " user will be HOST if using ", meeting_pin) }}
+    "result" : {{service_config|pex_update({"pin":meeting_pin, "guest_pin":random_pin, "allow_guests" : True})|pex_to_json}}
+ {% else %}
+For extra security you can have the room locked by default for guests by adding:
+
+
+
+"locked":True
+ 
+
+When user (Guest) dials into a meeting (SIP/ H.323/ WebRTC) a video is played from the Video Playback feature in Infinity. The user dials into VMR, but is transferred to VP, the needs to be transferred back to VMR remembering entered PIN and IDP ID session. We need to flag if video has been played or not for this transfer to work properly:
+
+
+
+{% if numeric_alias.startswith("88.") %}
+   {% set numeric_alias =  numeric_alias|pex_regex_replace('88\.(.+)', '\\1' ) %}
+   {% set completed_playback = True %}
+   {{pex_debug_log("Print1 numeric alias after removing dot", numeric_alias) }}
+{% endif %} 
+ 
+
+Note: We need to check early on if the user actually is calling a scheduled meeting or not (not=all other services like static VMR’s or GW services etc.):
+
+
+
+{% if not numeric_alias.startswith("88") %}
+        {
+        "action": "continue",
+        "result": {}
+        }
+ 
+
+As for the PIN check (Guest or Host based on location call is coming inn, we identify Video Playback should be played or not, as well as if user should authenticate using IDP or not:
+
+
+
+{% elif call_info.location == "VIDEOLAN" or completed_playback %}
+           		{{pex_debug_log("Print2 numeric alias after removing dot", numeric_alias) }}
+            {
+            "action" : "continue",
+            "result": {
+                    "name": "{{numeric_alias}}",
+                    "pin": {% if completed_playback %}"{{random_pin}}"{% else %} "{{meeting_pin}}"{% endif %},
+                    "service_type": "conference",
+                    "service_tag": "conference",
+                    "guest_pin": {% if completed_playback %}"{{meeting_pin}}"{% else %} "{{random_pin}}"{% endif %},
+                    "allow_guests" : true,
+                    "ivr_theme_name":"ababoy.com 30.08.2022",
+                    "locked" : true }}
+{% elif call_info.location == "VIDEODMZ" and (call_info.protocol == "api" or call_info.protocol == "webrtc") %}
+                    {
+                    "action" : "continue",
+                    "result": {
+                    "allow_guests":true,
+                    "name": "callback-{{call_info.local_alias}}",
+                    "service_type": "media_playback",
+					"locked": true,
+					"pin":"{{random_pin}}",
+					"guest_pin":"{{meeting_pin}}",
+                    "guest_identity_provider_group": "SSO Ababoy.com",
+                    "service_tag": "video-playback",
+                    "description": "ve-call for {{call_info.local_alias}}",
+                    "media_playlist": 2,
+                   "on_completion": "{\"transfer\": {\"conference\": \"88.{{numeric_alias}}\"}}"
+                   }}
+{% elif call_info.location == "VIDEODMZ" and call_info.protocol != "webrtc" %}
+                     {
+                    "action" : "continue",
+                    "result": {
+                    "ivr_theme_name":"ababoy.com 30.08.2022",
+					"allow_guests":true,
+                    "name": "callback-{{call_info.local_alias}}",
+                    "service_type": "media_playback",
+					"locked": true,
+					"pin":"{{random_pin}}",
+					"guest_pin":"{{meeting_pin}}",
+                    "service_tag": "video-playback",
+                    "description": "ve-call for {{call_info.local_alias}}",
+                    "media_playlist": 2,
+                   "on_completion": "{\"transfer\": {\"conference\": \"88.{{numeric_alias}}\"}}"
+                   }}
+ 
+
+The complete script:
+
+
+
+{% set shared_secret = "xxxxxxxxxxxxxxxxx" %}
+{% set numeric_alias = call_info.local_alias|pex_regex_replace('(sip:|h323:)?([\d\.]+)(@.+)?', '\\2' ) %}
+{% set active_domain = call_info.remote_alias | pex_regex_replace(".+@", "") %}
+{% set completed_playback = False %}
+{{pex_debug_log("Print2 Call Protocol pus", call_info.protocol) }}
+{% if numeric_alias.startswith("88.") %}
+   {% set numeric_alias =  numeric_alias|pex_regex_replace('88\.(.+)', '\\1' ) %}
+   {% set completed_playback = True %}
+   {{pex_debug_log("Print1 numeric alias after removing dot", numeric_alias) }}
+{% endif %}
+{% set meeting_pin = [shared_secret,numeric_alias]|join|pex_hash|pex_tail(5) + "3" %}
+{% set random_pin  = [shared_secret,numeric_alias]|join|pex_hash|pex_head(5) + "8" %}
+{% if not numeric_alias.startswith("88") %}
+        {
+        "action": "continue",
+        "result": {}
+        }
+{% elif call_info.location == "VIDEOLAN" or completed_playback %}
+           		{{pex_debug_log("Print2 numeric alias after removing dot", numeric_alias) }}
+            {
+            "action" : "continue",
+            "result": {
+                    "name": "{{numeric_alias}}",
+                    "pin": {% if completed_playback %}"{{random_pin}}"{% else %} "{{meeting_pin}}"{% endif %},
+                    "service_type": "conference",
+                    "service_tag": "conference",
+                    "guest_pin": {% if completed_playback %}"{{meeting_pin}}"{% else %} "{{random_pin}}"{% endif %},
+                    "allow_guests" : true,
+                    "ivr_theme_name":"ababoy.com 30.08.2022",
+                    "locked" : true }}
+{% elif call_info.location == "VIDEODMZ" and (call_info.protocol == "api" or call_info.protocol == "webrtc") %}
+                    {
+                    "action" : "continue",
+                    "result": {
+                    "allow_guests":true,
+                    "name": "callback-{{call_info.local_alias}}",
+                    "service_type": "media_playback",
+					"locked": true,
+					"pin":"{{random_pin}}",
+					"guest_pin":"{{meeting_pin}}",
+                    "guest_identity_provider_group": "SSO Ababoy.com",
+                    "service_tag": "video-playback",
+                    "description": "ve-call for {{call_info.local_alias}}",
+                    "media_playlist": 2,
+                   "on_completion": "{\"transfer\": {\"conference\": \"88.{{numeric_alias}}\"}}"
+                   }}
+{% elif call_info.location == "VIDEODMZ" and call_info.protocol != "webrtc" %}
+                     {
+                    "action" : "continue",
+                    "result": {
+                    "ivr_theme_name":"ababoy.com 30.08.2022",
+					"allow_guests":true,
+                    "name": "callback-{{call_info.local_alias}}",
+                    "service_type": "media_playback",
+					"locked": true,
+					"pin":"{{random_pin}}",
+					"guest_pin":"{{meeting_pin}}",
+                    "service_tag": "video-playback",
+                    "description": "ve-call for {{call_info.local_alias}}",
+                    "media_playlist": 2,
+                   "on_completion": "{\"transfer\": {\"conference\": \"88.{{numeric_alias}}\"}}"
+                   }}
+{% else %}
+        {
+        "action": "continue",
+        "result": {}
+        }
+{% endif %}
+ 
+
+Note on PIN Codes:
+
+We also need to add code to the Exchange Template to add the PIN code to the invitation:
+
+Add the same PIN variables to the “Joining Instructions Template”:
+
+
+
+{% set shared_secret = "xxxxxxxxxxxxxxxxxx" %}
+{% set meeting_pin = [shared_secret,numeric_alias]|join|pex_hash|pex_tail(5) + "3" %}
+Then add the text you want for PIN codes and the syntax fo generating the PIN somewhere suitable in the same template as above:
+
+
+
+<b>Use Meeting PIN: {{ meeting_pin|pex_regex_replace('(\d{3})(\d{3})', '\\1 \\2') }}</b><br>
+
+==============================
+
+Policy #17
+
+Set Bandwidth override for listed remote aliases
+
+{
+  {% set endpointalias = [ "11111@domain.com", "22222@domain.com", "33333@domain.com", "44444@domain.com"] %}
+  {{pex_debug_log("Call information ", call_info) }}
+  {% if service_config %}
+    "action" : "continue",
+    {% if call_info.protocol == "h323" and call_info.call_direction == "dial_in" and call_info.remote_alias in endpointalias %}
+      "result" : {{service_config|pex_update({"max_callrate_in": 4096000, "max_callrate_out": 4096000})|pex_to_json}}
+    {% else %}
+      "result" : {{service_config|pex_to_json}}
+    {% endif %}
+  {% else %}
+    "action" : "reject",
+    "result" : {}
+  {% endif %}
+}
+==============================
+
+Policy #18
+
+Trust these domains for Teams CVI
+
+{
+  {% set trusted_domains = ("@pexip.com", "@vp.pexip.com") %}
+  {{pex_debug_log("Call information ", call_info) }}
+  {{pex_debug_log("Service information ", service_config) }}
+  {% if service_config %}
+    "action" : "continue",
+    {% if call_info.remote_alias.endswith(trusted_domains) and call_info.call_direction == "dial_in" and service_config.service_tag == "TEAMS" %}
+      {{pex_debug_log("Matched PEXIP.COM, %s treating as trusted  ", call_info.remote_alias) }}
+      "result" : {{service_config|pex_update({"treat_as_trusted": True})|pex_to_json}}
+    {% else %}
+      "result" : {{service_config|pex_to_json}}
+    {% endif %}
+  {% else %}
+    "action" : "reject",
+    "result" : {}
+  {% endif %}
+}
+
+==============================
+
+Policy #19
+
+Inspect the calling alias to lookup a steering code and modify the destination alias (audio routing)
+
+
+A customer could not get his audio team to build this use case into the Avaya platform, so he asked if we could do this. The script inspects the calling endpoint alias and pulls out a 2 character country code. The script looks up the country code and finds a steering code. The script then prepends the steering code to the destination alias. The steering code tells Avaya which gateway to transfer for the PSTN call. 
+
+
+{
+	{# initialize the variables #}
+	{% set code = {"AU":"8119","BE":"3202","BR":"7180","CH":"3307","CN":"8671","DE":"3401","DK":"3203","ES":"3304","FR":"3301","GB":"3104","IE":"3103","IL":"3310","IT":"3303","JP":"8102","KR":"8620","MY":"8118","MX":"7380","NL":"3211","NO":"3205","PA":"7110","PE":"7109","PL":"4304","RO":"3406","RU":"3405","SG":"8115","SE":"3204","TR":"3306"} %}
+	{% set groups = "" %}
+	{% set orgcode = "" %}
+	{% if service_config %}
+		{{pex_debug_log("104 Service_config", service_config) }}
+		{{pex_debug_log("104 Call_info", call_info) }}
+		{% if service_config.service_tag == "dellAudio" %}
+			{# find country code in ep name #}
+			{{pex_debug_log("Calling endpoint Name: " + call_info.remote_display_name) }}
+			{{pex_debug_log("Calling endpoint SIP URI: " + call_info.remote_alias) }}
+            {{pex_debug_log("Destination alias: " + call_info.local_alias) }}
+			{% set groups = pex_regex_search('.+\_\d+\_(..).+', call_info.remote_alias) %}
+			{% if not groups %}
+				{# try a different format #}
+				{% set groups = pex_regex_search('.+\_\d+\_\d+\_(..).+', call_info.remote_alias) %}
+			{% endif %}
+			{% if groups %}
+				{% if groups[0] == "US" or groups[0] == "CA" %}
+					{{pex_debug_log("Country Code US or CA was found, no steering code needed") }}
+					"action": "continue",
+					"result": {{service_config|pex_to_json}}
+				{% else %}
+                    {% set orgcode = code[groups[0]] %}
+                    {% if orgcode %}
+						{{pex_debug_log("Found country code", groups[0], " adding steering code to alias", orgcode) }}
+                        {{pex_debug_log("New destination alias: " + orgcode + service_config.remote_alias) }}
+					    "action": "continue",
+					    "result" : {{service_config|pex_update({"remote_alias":orgcode + service_config.remote_alias})|pex_to_json}}
+					{% else %}
+						{{pex_debug_log("Could not find a steering code for: " + call_info.remote_alias) }}
+						"action": "continue",
+						"result": {{service_config|pex_to_json}}
+					{% endif %}
+				{% endif %}
+			{% else %}
+				{{pex_debug_log("Could not find a county code for: " + call_info.remote_alias) }}
+				"action": "continue",
+				"result": {{service_config|pex_to_json}}
+			{% endif %}
+		{# not an audio call - process normally #}
+		{% else %}
+			"action": "continue",
+			"result": {{service_config|pex_to_json}}
+		{% endif %}
+	{% else %}
+		"action": "reject",
+		"result": {}
+	{% endif %}
+}
+
+==============================
+
+Policy #20
+
+PIN based Scheduled Meeting With Media Playback and IDP
+
+
+In this example we will combine a local policy and Exchange Scheduling template to generate a PIN for scheduled meetings. The PIN will act as a Host PIN for “trusted” participants calling in through “VIDEOLAN”. All other participants that call through any other location will be “untrusted” (“VIDEODMZ”) and the PIN will act as a Guest PIN. We will also generate a “random” pin that will be hidden and set as Guest PIN for participants calling through “VIDEOLAN”, and set as a hidden Host PIN for all other participants.
+
+All guests will have to identify the selves using an IDP provider (in this case AzureAD) to provide a “real name” and access to the meeting (in addition to Guest PIN)
+
+A information video is played back after successful login to the meeting for guests.
+
+All guests will finally enter the VMR in a lobby (VMR is in “locked” state) and Hosts needs to admit/ unlock guests for guests to finally join the meeting. 
+
+Because of how the video playback service has been designed the guests actually needs to authenticate towards the video playback service, and not the VMR. The authentication details are inherited before the transfer to the scheduled VMR.
+
+The first step is to generate the PIN codes. The PIN codes are created in two parts based on a static “secret” passphrase:
+
+
+
+{% set shared_secret = "xxxxxxxxxxxxxxx" %}
+…and the part of the URI dialed for the scheduled meeting:
+
+
+
+{% set numeric_alias = call_info.local_alias|pex_regex_replace('(sip:|h323:)?([\d\.]+)(@.+)?', '\\2' ) %}
+The two variables are combined and hashed to make up part of the PIN codes.
+
+The “meeting_pin” and the “random_pin” is created based on the variables above:
+
+
+
+{% set meeting_pin = [shared_secret,numeric_alias]|join|pex_hash|pex_tail(5) + "3" %}
+{% set random_pin  = [shared_secret,numeric_alias]|join|pex_hash|pex_head(5) + "8" %}
+To successfully enter the VMR we need to know if the video playback has been performed or not and need a variable to confirm this. Default value for new callers are “false”:
+
+
+
+{% set completed_playback = False %}
+The script loops original requests. The original dialed address starts with “88”, but needs to be rewritten to force the caller into the video playback service that use the prefix “88.”
+
+
+
+{% set numeric_alias =  numeric_alias|pex_regex_replace('88\.(.+)', '\\1' ) %}
+Because of an issue regarding mixing IDP and PIN all video endpoints calling the service circumvent the PIN code if we mix call protocols for WebRTC and SIP/H.323/MSSIP. Thus we need to split protocols in the script. Also since we are using the video playback service we cannot distinguish WebRTC calls from SIP. Thus we need to include the “api” protocol handler for WebRTC to separate it from SIP/H.323/MSSIP.
+
+
+
+{% elif call_info.location == "VIDEODMZ" and (call_info.protocol == "api" or call_info.protocol == "webrtc") %}
+                    {
+                    "action" : "continue",
+                    "result": {
+                    "allow_guests":true,
+                    "name": "callback-{{call_info.local_alias}}",
+                    "service_type": "media_playback",
+					"locked": true,
+					"pin":"{{random_pin}}",
+					"guest_pin":"{{meeting_pin}}",
+                    "guest_identity_provider_group": "SSO Ababoy.com",
+                    "service_tag": "video-playback",
+                    "description": "ve-call for {{call_info.local_alias}}",
+                    "media_playlist": 2,
+                   "on_completion": "{\"transfer\": {\"conference\": \"88.{{numeric_alias}}\"}}"
+                   }}
+{% elif call_info.location == "VIDEODMZ" and call_info.protocol != "webrtc" %}
+                     {
+                    "action" : "continue",
+                    "result": {
+                    "ivr_theme_name":"ababoy.com 30.08.2022",
+					"allow_guests":true,
+                    "name": "callback-{{call_info.local_alias}}",
+                    "service_type": "media_playback",
+					"locked": true,
+					"pin":"{{random_pin}}",
+					"guest_pin":"{{meeting_pin}}",
+                    "service_tag": "video-playback",
+                    "description": "ve-call for {{call_info.local_alias}}",
+                    "media_playlist": 2,
+                   "on_completion": "{\"transfer\": {\"conference\": \"88.{{numeric_alias}}\"}}"
+                   }}
+We actually only use the Playlist ID “"media_playlist": 2," and NOT the “Media Playlist Service” configuration. The media playlist ID can be found in the URL for the media playlist configuration:
+
+
+Complete Script: 
+
+
+
+{% set shared_secret = "xxxxxxxxxxxxxxxxxxx" %}
+{% set numeric_alias = call_info.local_alias|pex_regex_replace('(sip:|h323:)?([\d\.]+)(@.+)?', '\\2' ) %}
+{% set active_domain = call_info.remote_alias | pex_regex_replace(".+@", "") %}
+{% set completed_playback = False %}
+{{pex_debug_log("Print2 Call Protocol pus", call_info.protocol) }}
+{% if numeric_alias.startswith("88.") %}
+   {% set numeric_alias =  numeric_alias|pex_regex_replace('88\.(.+)', '\\1' ) %}
+   {% set completed_playback = True %}
+   {{pex_debug_log("Print1 numeric alias after removing dot", numeric_alias) }}
+{% endif %}
+{% set meeting_pin = [shared_secret,numeric_alias]|join|pex_hash|pex_tail(5) + "3" %}
+{% set random_pin  = [shared_secret,numeric_alias]|join|pex_hash|pex_head(5) + "8" %}
+{% if not numeric_alias.startswith("88") %}
+        {
+        "action": "continue",
+        "result": {}
+        }
+{% elif call_info.location == "VIDEOLAN" or completed_playback %}
+           		{{pex_debug_log("Print2 numeric alias after removing dot", numeric_alias) }}
+            {
+            "action" : "continue",
+            "result": {
+                    "name": "{{numeric_alias}}",
+                    "pin": {% if completed_playback %}"{{random_pin}}"{% else %} "{{meeting_pin}}"{% endif %},
+                    "service_type": "conference",
+                    "service_tag": "conference",
+                    "guest_pin": {% if completed_playback %}"{{meeting_pin}}"{% else %} "{{random_pin}}"{% endif %},
+                    "allow_guests" : true,
+                    "ivr_theme_name":"ababoy.com 30.08.2022",
+                    "locked" : true }}
+{% elif call_info.location == "VIDEODMZ" and (call_info.protocol == "api" or call_info.protocol == "webrtc") %}
+                    {
+                    "action" : "continue",
+                    "result": {
+                    "allow_guests":true,
+                    "name": "callback-{{call_info.local_alias}}",
+                    "service_type": "media_playback",
+					"locked": true,
+					"pin":"{{random_pin}}",
+					"guest_pin":"{{meeting_pin}}",
+                    "guest_identity_provider_group": "SSO Ababoy.com",
+                    "service_tag": "video-playback",
+                    "description": "ve-call for {{call_info.local_alias}}",
+                    "media_playlist": 2,
+                   "on_completion": "{\"transfer\": {\"conference\": \"88.{{numeric_alias}}\"}}"
+                   }}
+{% elif call_info.location == "VIDEODMZ" and call_info.protocol != "webrtc" %}
+                     {
+                    "action" : "continue",
+                    "result": {
+                    "ivr_theme_name":"ababoy.com 30.08.2022",
+					"allow_guests":true,
+                    "name": "callback-{{call_info.local_alias}}",
+                    "service_type": "media_playback",
+					"locked": true,
+					"pin":"{{random_pin}}",
+					"guest_pin":"{{meeting_pin}}",
+                    "service_tag": "video-playback",
+                    "description": "ve-call for {{call_info.local_alias}}",
+                    "media_playlist": 2,
+                   "on_completion": "{\"transfer\": {\"conference\": \"88.{{numeric_alias}}\"}}"
+                   }}
+{% else %}
+        {
+        "action": "continue",
+        "result": {}
+        }
+{% endif %}
+ 
+
+We also need to add code to the Exchange Template to add the PIN code to the invitation:
+
+Add the same PIN variables to the “Joining Instructions Template”:
+
+
+
+{% set shared_secret = "xxxxxxxxxxxxxxxxxxxxxxxxx" %}
+{% set meeting_pin = [shared_secret,numeric_alias]|join|pex_hash|pex_tail(5) + "3" %}
+Then add the text you want for PIN codes and the syntax fo generating the PIN somewhere suitable in the same template as above:
+
+
+
+<b>Use Meeting PIN: {{ meeting_pin|pex_regex_replace('(\d{3})(\d{3})', '\\1 \\2') }}</b><br>
+
+So in summary…
+
+Meeting ID only valid during the scheduled time
+
+PIN code dynamically assigns host/guest role based on configured policy
+
+The meeting can be locked by default so guests must be admitted or meeting must be unlocked to accept external joiners
+
+VoIP scanner protection blocks someone guessing random Meeting IDs
+
+PIN brute force protection blocks someone guessing the PIN for a given meeting.
+
+PIN length can be increased if desired by the customer
+
+IDP to verify guest and display “real” name
+
+Video playback with upfront relevant information about the meeting guest is entering.
+
+==============================
+
+Policy #21
+
+Schedule media playback to kick in based on weekday & time
+
+
+Created this local policy for a customer that has a large all hands meeting every Monday morning that lasts for 1 hour and wants to allocate all port licenses and transcoding capacity to this meeting (at the expense of other meetings). The policy requires a media playback source called 'allhands_meeting_message' and a media playback list called 'allhands_meeting_message'. 
+
+The script will:
+
+Allow the all hands meeting with the service tag 'allowmeeting' at any time
+
+Between 8-9 AM on Monday at the time of the all hands meeting re-direct participants attempting to join any other VMR's to a short media playback video called 'allhands_meeting_message' stating that 'a priority meeting is taking place, please reschedule your meeting..' or similar and then disconnects the call.
+
+The policy will allow any participants to access any scheduled or static VMR at any other time.
+
+ 
+
+
+
+{
+{# Variables declared in lines 3-16 added to get in a weekday function #}
+{% set now = pex_now("Europe/Helsinki") %}
+{% set offset = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334] %}
+{% set week   = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday",  "Friday", "Saturday"] %}
+{% set afterFeb = 1 %}
+{% if now.month > 2 %}
+    {% set afterFeb = 0 %}
+{% endif %}
+{% set aux = now.year - 1700 - afterFeb %}
+{% set dayOfWeek0  = 5 %}
+{% set dayOfWeek1 = dayOfWeek0 + (aux + afterFeb) * 365 %}
+{% set dayOfWeek2 = dayOfWeek1 + aux / 4 - aux / 100 + (aux + 100) / 400 %}
+{% set dayOfWeek3 = dayOfWeek2 + offset[now.month - 1] + (now.day - 1) %}
+{% set dayOfWeek = dayOfWeek3 % 7 %}
+{% set theDay = week[dayOfWeek | round(0) | int ] %}  
+{% if service_config %}
+    "action" : "continue",      
+{% if service_config.service_tag.startswith("allowmeeting") %}
+         "action" : "continue",
+         "result" : {{service_config|pex_to_json}}
+      
+      {% elif theDay == "Monday" and now.hour == 8  %}
+                    "action": "continue",
+                    "result": {
+                        "name": "allhands_meeting_message",
+                        "service_type": "media_playback",
+                        "service_tag": "allowmeeting",
+                        "media_playlist_name": "allhands_meeting_message",
+                        "on_completion": {"disconnect": true}
+                  }
+    {% else %}
+         "action" : "continue",
+         "result" : {{service_config|pex_to_json}}
+    {% endif %}
+  {% else %}
+    "action" : "reject",
+    "result" : {}
+  {% endif %}
+}
+ 
+
+The media playback video will consume a port license and some transcoding capacity but will be much less impact than having other meetings ongoing at the same time. 
+
+
+==============================
+
+Policy #22
+
+Play media playlist before a Teams call
+
+
+
+{ {# Match a call starting with 88 and use regex to pull out the teams id @ domain.#}
+  {% set teams_id = call_info.local_alias|pex_regex_replace("^(sip:)?88(\d{9,13}@pex\.vc)", "\\2") %}
+  {% if service_config %}
+    {# Match a call routing rule has a prefix of 88, play some media then send the call to a different rule that has a brand #}
+    {% if call_info.call_direction == 'dial_in' %}
+      {% if "greg" in service_config.service_tag %}
+        "action" : "continue",
+        "result" : {
+              "name": "Greg Media",
+              "service_type":"media_playback",
+              "service_tag":"test",
+              "media_playlist_name":"greg_dod",
+              "on_completion": "{\"transfer\": {\"conference\": \"89{{teams_id}}\"}}"
+              }
+      {% else %}
+        "action" : "continue",
+        "result" : {{service_config|pex_to_json}}
+      {% endif %}
+    {% else %}
+      "action" : "continue",
+      "result" : {{service_config|pex_to_json}}
+    {% endif %}
+  {% else %}
+    "action" : "reject",
+    "result" : {}
+  {% endif %}
+}
+
+==============================
+
+Policy #23
+
+
+Enable Live Captions for Scheduled Conferences
+
+The script looks for a specific prefix being dialled and that the service is a conference, it then sets captions to be enabled.
+
+
+
+{% set pinsched_prefix = pex_regex_search("^(h323:88|sip:88|88).+", call_info.local_alias) %}
+{
+    {{pex_debug_log("Call information ", call_info) }}
+        {% if service_config %}
+            "action" : "continue",
+            {% if service_config.service_type == "conference" and pinsched_prefix %}
+                {{pex_debug_log("This is a 88 scheduled meeting - Live Captions Enabled, Dialed alias is ", call_info.local_alias) }}
+                "result" : {{service_config|pex_update({"live_captions_enabled":"yes"})|pex_to_json}}
+            {% else %}
+                "result" : {{service_config|pex_to_json}}
+            {% endif %}
+        {% else %}
+            "action" : "reject",
+            "result" : {}
+        {% endif %}
+}
+
+==============================
+
+Policy #24
+
+Policy to play Media Playback prior to entering a VMR
+
+Note that the VMR has a second alias
+
+{ 
+  {% set call_id = call_info.local_alias %}
+  {% set host_pin = service_config.pin %}
+  {% set guest_pin = service_config.guest_pin %}
+  {% set host_idp = service_config.host_identity_provider_group %}
+  {% set non_idp_participants = service_config.non_idp_participants %}
+  {% set allow_guest = service_config.allow_guests %}
+  {% if service_config %}
+    "action" : "continue",
+      {{pex_debug_log("***Service Config ", service_config) }}
+    {% if call_info.call_direction == 'dial_in' and (call_info.local_alias.startswith("sso") or call_info.local_alias.startswith("sip:sso")) %}
+        "result" : {
+             "name": "Video Message before transfer from - {{call_id}}",
+              "service_type":"media_playback",
+              "service_tag":"test",
+              "media_playlist":4,
+              "pin": "{{host_pin}}",
+              "guest_pin": "{{guest_pin}}",
+              "allow_guests": "{{allow_guest}}",
+              "host_identity_provider_group": "{{host_idp}}",
+              "non_idp_participants": "{{non_idp_participants}}",
+              "on_completion": "{\"transfer\": {\"conference\": \"pb_sso\", \"role\": \"auto\"}}"
+        }
+    {% else %}
+      "action" : "continue",
+      "result" : {{service_config|pex_to_json}}
+    {% endif %}
+  {% else %}
+    "action" : "reject",
+    "result" : {}
+  {% endif %}
+}
+
+
+
+
+==============================
+
+Policy #25
+
+Basic do not transcode policy
+
+Configure a service tag of do-not-transcode on a SIP to SIP routing rule with this policy.  
+
+
+
+{
+    {% if service_config %}
+      "action" : "continue",
+      {% if service_config.service_tag == "do-not-transcode" %}
+        "result" : {{service_config|pex_update({"transcoding_enabled": False})|pex_to_json}}
+      {% else %}
+        "result" : {{service_config|pex_to_json}}
+      {% endif %}
+    {% else %}
+        "action" : "reject",
+        "result" : {}
+    {% endif %}
