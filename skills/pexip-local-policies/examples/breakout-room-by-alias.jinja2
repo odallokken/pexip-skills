@@ -1,0 +1,20 @@
+{# Routes teama@example.com and teamb@example.com directly into a breakout room
+   under the "gamesroom" main VMR. The main VMR ("gamesroom") MUST exist in Pexip,
+   and the two team aliases must NOT be additional aliases of it. #}
+{
+    {% if service_config %}
+        "action" : "continue",
+        "result" : {{service_config|pex_to_json}}
+    {% else %}
+        {% if call_info.local_alias == "teama@example.com" %}
+            "action" : "continue",
+            "result" : {"name":"gamesroom", "breakout_uuid":"00000000-0000-0000-0000-000000000001",  "breakout":true, "breakout_rooms":false, "breakout_name" : "Team A", "breakout_description": "Team A room", "end_action":"transfer", "end_time":0, "service_tag":"gamesroom_teama", "service_type":"conference", "allow_guests": true, "pin": "4567"}
+        {% elif call_info.local_alias == "teamb@example.com" %}
+            "action" : "continue",
+            "result" : {"name":"gamesroom", "breakout_uuid":"00000000-0000-0000-0000-000000000002",  "breakout":true, "breakout_rooms":false, "breakout_name" : "Team B", "breakout_description": "Team B room", "end_action":"transfer", "end_time":0, "service_tag":"gamesroom_teamb", "service_type":"conference", "allow_guests": true, "pin": "4567"}
+        {% else %}
+            "action" : "reject",
+            "result" : {}
+        {% endif %}
+    {% endif %}
+}

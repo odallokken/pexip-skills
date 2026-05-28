@@ -1,0 +1,9 @@
+{
+    {% if service_config %}
+        "action" : "continue",
+        "result" : {{service_config|pex_to_json}}
+    {% else %}
+        "action" : "reject",
+        "result" : {}
+    {% endif %}
+}

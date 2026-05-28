@@ -1,0 +1,16 @@
+{
+    {% set now = pex_now("Europe/London") %}
+    {% if service_config %}
+        "action" : "continue",
+        {% if now.hour < 12 %}
+            "result" : {{service_config|pex_to_json}}
+        {% elif now.hour < 18 %}
+            "result" : {{service_config|pex_update({"ivr_theme_name":"Afternoon theme"})|pex_to_json}}
+        {% else %}
+            "result" : {{service_config|pex_update({"ivr_theme_name":"Evening theme"})|pex_to_json}}
+        {% endif %}
+    {% else %}
+        "action" : "reject",
+        "result" : {}
+    {% endif %}
+}

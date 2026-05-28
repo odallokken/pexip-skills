@@ -1,0 +1,12 @@
+{
+    {% if service_config and service_config.service_type == "gateway" and service_config.called_device_type == "teams_conference" %}
+        "action" : "continue",
+        "result" : {{service_config|pex_update({"view":"teams"})|pex_to_json}}
+    {% elif service_config %}
+        "action" : "continue",
+        "result" : {{service_config|pex_to_json}}
+    {% else %}
+        "action" : "reject",
+        "result" : {}
+    {% endif %}
+}

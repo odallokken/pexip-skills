@@ -1,0 +1,13 @@
+{
+    {% if service_config %}
+        "action" : "continue",
+        {% if service_config.service_type == "conference" and service_config.service_tag.startswith("locked") %}
+            "result" : {{service_config|pex_update({"locked":True })|pex_to_json}}
+        {% else %}
+            "result" : {{service_config|pex_to_json}}
+        {% endif %}
+    {% else %}
+        "action" : "reject",
+        "result" : {}
+    {% endif %}
+}

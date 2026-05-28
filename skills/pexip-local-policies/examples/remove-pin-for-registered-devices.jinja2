@@ -1,0 +1,13 @@
+{
+    {% if service_config %}
+        "action" : "continue",
+        {% if call_info.registered %}
+            "result" : {{service_config|pex_update({"pin":"", "guest_pin":"", "allow_guests" : False})|pex_to_json}}
+        {% else %}
+            "result" : {{service_config|pex_to_json}}
+        {% endif %}
+    {% else %}
+        "action" : "reject",
+        "result" : {}
+    {% endif %}
+}
